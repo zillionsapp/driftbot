@@ -1,0 +1,10 @@
+{
+  "name": "drift-paperbot",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@drift-labs/sdk": "^2.136.0-beta.2",
+    "@solana/web3.js": "^1.95.4",
+    "dotenv": "^16.4.5"
+  }
+}
