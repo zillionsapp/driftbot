@@ -4,35 +4,39 @@ import { createLogger } from './logging/logger.js';
 import { createStore } from './state/store.js';
 import { createPaperBroker } from './execution/paperBroker.js';
 import { createDriftContext } from './drift/client.js';
-import { resolveMarketIndex } from './markets/resolveMarketIndex.js';
+import { buildMarketUniverse } from './markets/universe.js';
 import { createStrategy as createEmaCrossover } from './strategies/emaCrossover.js';
 import { runBot } from './bot/runBot.js';
 
 async function main() {
   const cfg = createConfig();
   const log = createLogger(cfg);
-  log.info(`starting drift paper bot on ${cfg.MARKET_SYMBOL}`);
 
-  // State (semi-DB)
   const store = await createStore(cfg, log);
 
-  // Drift context (connection + client + market subscription)
-  const ctx = await createDriftContext(cfg, log);
-  const marketIndex = await resolveMarketIndex(ctx.env, cfg.MARKET_SYMBOL, ctx.PerpMarkets);
-  log.info(`subscribed to ${ctx.env} – ${cfg.MARKET_SYMBOL} (index ${marketIndex})`);
+  // Resolve market universe and subscribe only to those indexes
+  const { list: universe, indexes } = await buildMarketUniverse(cfg);
+  log.info(`universe: ${universe.map(x => x.symbol).join(', ')}`);
 
-  // Strategy (pluggable)
-  const strategy = createEmaCrossover({ 
-    fastPeriod: cfg.FAST_EMA, 
-    slowPeriod: cfg.SLOW_EMA, 
-    baseNotional: cfg.BASE_NOTIONAL 
+  const ctx = await createDriftContext(cfg, log, {
+    perpMarketIndexes: indexes,
+    spotMarketIndexes: [],
   });
+  log.info(`subscribed to ${ctx.env} – perp indexes [${indexes.join(', ')}]`);
 
-  // Execution (paper)
+  // Strategy instances per market (same config for now)
+  const strategiesBySymbol = {};
+  for (const { symbol } of universe) {
+    strategiesBySymbol[symbol] = createEmaCrossover({
+      fastPeriod: cfg.FAST_EMA,
+      slowPeriod: cfg.SLOW_EMA,
+      baseNotional: cfg.BASE_NOTIONAL
+    });
+  }
+
   const broker = createPaperBroker(cfg, store, log);
 
-  // Run orchestrator
-  await runBot({ cfg, log, store, ctx, marketIndex, strategy, broker });
+  await runBot({ cfg, log, store, ctx, universe, strategiesBySymbol, broker });
 }
 
 main().catch((e) => {

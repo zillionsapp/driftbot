@@ -5,12 +5,11 @@ const {
   DriftClient,
   initialize,
   convertToNumber,
-  PerpMarkets,
   calculateBidAskPrice,
   PRICE_PRECISION,
 } = pkg;
 
-export async function createDriftContext(cfg, log) {
+export async function createDriftContext(cfg, log, marketOpts = {}) {
   const commitmentOrConfig = {
     commitment: 'confirmed',
     ...(cfg.WS_URL ? { wsEndpoint: cfg.WS_URL } : {})
@@ -25,7 +24,9 @@ export async function createDriftContext(cfg, log) {
     connection,
     wallet: { publicKey: dummy.publicKey, payer: dummy },
     env,
-    accountSubscription: { type: 'websocket' }
+    accountSubscription: { type: cfg.ACCOUNT_SUB_TYPE }, // 'websocket' | 'polling'
+    skipLoadUsers: true,
+    ...marketOpts
   });
 
   try {
@@ -57,5 +58,5 @@ export async function createDriftContext(cfg, log) {
     try { await drift.unsubscribe(); } catch {}
   }
 
-  return { connection, env, drift, PerpMarkets, getMarkPrice, close };
+  return { connection, env, drift, getMarkPrice, close };
 }

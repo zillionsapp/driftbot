@@ -27,23 +27,32 @@ export async function createStore(cfg, log) {
     meta: {
       createdAt: nowIso(),
       network: cfg.ENV_NETWORK,
-      market: cfg.MARKET_SYMBOL,
-      notes: 'paper trading state'
+      notes: 'paper trading state (multi-market)'
     },
     deposit: cfg.INITIAL_DEPOSIT,
     cash: cfg.INITIAL_DEPOSIT,
-    position: 0,
-    entryPrice: 0,
-    realizedPnL: 0,
-    feesPaid: 0,
-    trades: []
+    markets: {} // keyed by symbol
   };
+
+  function ensureMarket(symbol) {
+    if (!state.markets[symbol]) {
+      state.markets[symbol] = {
+        position: 0,
+        entryPrice: 0,
+        realizedPnL: 0,
+        feesPaid: 0,
+        trades: []
+      };
+    }
+    return state.markets[symbol];
+  }
 
   const api = {
     get: () => state,
+    ensureMarket,
     save: () => save(state),
-    recordTrade: (trade) => {
-      state.trades.push(trade);
+    recordTrade: (symbol, trade) => {
+      ensureMarket(symbol).trades.push(trade);
       save(state);
     }
   };

@@ -1,13 +1,16 @@
 import { nowIso } from '../utils/time.js';
 
+/**
+ * Paper broker with per-market bookkeeping, global cash.
+ */
 export function createPaperBroker(cfg, store, log) {
   const state = store.get();
   const feeBps = 2;      // 2 bps per side
   const slippageBps = 1; // 1 bps
 
-  function applyFee(notional) {
+  function applyFee(notional, mkt) {
     const fee = (feeBps / 1e4) * Math.abs(notional);
-    state.feesPaid += fee;
+    mkt.feesPaid += fee;
     state.cash -= fee;
   }
 
@@ -16,50 +19,52 @@ export function createPaperBroker(cfg, store, log) {
     return side === 'buy' ? price + s : price - s;
   }
 
-  function markToMarketPx(markPrice) {
-    if (state.position === 0) return 0;
-    const pnlPerUnit = (markPrice - state.entryPrice) * Math.sign(state.position);
-    return pnlPerUnit * Math.abs(state.position);
+  function markToMarketPx(symbol, markPrice) {
+    const mkt = store.ensureMarket(symbol);
+    if (mkt.position === 0) return 0;
+    const pnlPerUnit = (markPrice - mkt.entryPrice) * Math.sign(mkt.position);
+    return pnlPerUnit * Math.abs(mkt.position);
   }
 
-  function paperFill(side, qty, markPrice) {
+  function paperFill(symbol, side, qty, markPrice) {
     if (qty <= 0) return;
+    const mkt = store.ensureMarket(symbol);
+
     const px = slip(markPrice, side);
     const notional = px * qty;
 
-    // cash
+    // cash (global)
     if (side === 'buy') state.cash -= notional;
     else state.cash += notional;
 
     // fees
-    applyFee(notional);
+    applyFee(notional, mkt);
 
-    // position & realized
-    const prevPos = state.position;
+    // position & realized (per-market)
+    const prevPos = mkt.position;
     const newPos = prevPos + (side === 'buy' ? qty : -qty);
 
     if (prevPos === 0 || Math.sign(prevPos) === Math.sign(newPos)) {
       // increase / same side
-      const totalCost = state.entryPrice * Math.abs(prevPos) + px * qty;
+      const totalCost = mkt.entryPrice * Math.abs(prevPos) + px * qty;
       const newQtyAbs = Math.abs(newPos);
-      state.entryPrice = newQtyAbs > 0 ? totalCost / newQtyAbs : 0;
+      mkt.entryPrice = newQtyAbs > 0 ? totalCost / newQtyAbs : 0;
     } else {
       // reduce/close/flip
       const closingQty = Math.min(Math.abs(prevPos), qty);
-      const realized = (px - state.entryPrice) * Math.sign(prevPos) * closingQty;
-      state.realizedPnL += realized;
+      const realized = (px - mkt.entryPrice) * Math.sign(prevPos) * closingQty;
+      mkt.realizedPnL += realized;
 
       if (Math.abs(newPos) > 0 && Math.sign(newPos) !== Math.sign(prevPos)) {
         // flipped
-        state.entryPrice = px;
+        mkt.entryPrice = px;
       } else if (newPos === 0) {
-        state.entryPrice = 0;
+        mkt.entryPrice = 0;
       }
     }
 
-    state.position = newPos;
+    mkt.position = newPos;
 
-    // event
     const trade = {
       t: nowIso(),
       side,
@@ -67,7 +72,7 @@ export function createPaperBroker(cfg, store, log) {
       px,
       notional: px * qty * (side === 'sell' ? 1 : -1)
     };
-    store.recordTrade(trade);
+    store.recordTrade(symbol, trade);
     return trade;
   }
 
