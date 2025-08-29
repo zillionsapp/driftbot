@@ -4,12 +4,11 @@ import { nowIso } from '../utils/time.js';
  * Run orchestrator across a market universe.
  * Each market has its own strategy instance and state entry.
  */
-export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbol, broker }) {
+export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbol, broker, risk }) {
   let lastLogTs = 0;
   let lastSaveTs = 0;
   const state = store.get();
 
-  // helper to format prices nicely (fewer decimals for high-priced markets)
   const fmtPx = (v) => v == null ? 'n/a' : (v >= 1000 ? v.toFixed(2) : v.toFixed(4));
 
   const tick = async () => {
@@ -18,12 +17,11 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
         const px = await ctx.getMarkPrice(marketIndex);
         if (!px) continue;
 
-        // cache latest mark for periodic status + MTM
         const mkt = store.ensureMarket(symbol);
         const prevMark = mkt.lastMark;
         mkt.lastMark = px.mark;
 
-        // --- price move gate (skip tiny moves to save work/RPC userland) ---
+        // price move gate
         if (prevMark != null) {
           const moveBps = Math.abs((px.mark - prevMark) / prevMark) * 1e4;
           if (moveBps < cfg.MIN_MARK_MOVE_BPS) continue;
@@ -32,16 +30,54 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
         const strat = strategiesBySymbol[symbol];
         const signal = strat.onPrice(px);
 
-        // Execution
-        if (signal.action === 'buy' && mkt.position <= 0) {
-          const qty = Math.max(0.001, signal.baseNotional / px.mark);
-          broker.paperFill(symbol, 'buy', qty, px.mark);
-          log.info(`${nowIso()} [${symbol}] LONG +${qty.toFixed(4)} @ ~${px.mark.toFixed(4)} | cash=${state.cash.toFixed(2)}`);
+        // persist strategy snapshot (restart-safe)
+        if (strat.snapshot) {
+          store.setStrategyState(symbol, strat.snapshot());
         }
-        if (signal.action === 'sell' && mkt.position >= 0) {
-          const qty = Math.max(0.001, signal.baseNotional / px.mark);
-          broker.paperFill(symbol, 'sell', qty, px.mark);
-          log.info(`${nowIso()} [${symbol}] SHORT -${qty.toFixed(4)} @ ~${px.mark.toFixed(4)} | cash=${state.cash.toFixed(2)}`);
+
+        // --- Execution with clamp + risk ---
+        const baseQty = Math.max(0.001, signal.baseNotional / px.mark);
+
+        if (signal.action === 'buy') {
+          let qty = 0;
+          if (mkt.position < 0) {
+            // exit short toward flat (no flip)
+            qty = Math.min(baseQty, Math.abs(mkt.position));
+          } else if (mkt.position === 0) {
+            // enter long from flat
+            qty = baseQty;
+          }
+          if (qty > 0) {
+            const evalRes = risk.evaluate(symbol, 'buy', qty, px.mark);
+            if (evalRes.allowed && evalRes.qty > 0) {
+              const { trade, realizedDelta } = broker.paperFill(symbol, 'buy', evalRes.qty, px.mark);
+              risk.onTrade({ symbol, side: 'buy', qty: evalRes.qty, price: px.mark, realizedDelta });
+              log.info(`${nowIso()} [${symbol}] BUY ${evalRes.qty.toFixed(4)} @ ~${px.mark.toFixed(4)} | cash=${state.cash.toFixed(2)} (${evalRes.reason})`);
+            } else {
+              log.debug?.(`[${symbol}] BUY vetoed: ${evalRes.reason}`);
+            }
+          }
+        }
+
+        if (signal.action === 'sell') {
+          let qty = 0;
+          if (mkt.position > 0) {
+            // exit long toward flat (no flip)
+            qty = Math.min(baseQty, mkt.position);
+          } else if (mkt.position === 0 && !cfg.STRAT_EMA.longOnly) {
+            // enter short from flat
+            qty = baseQty;
+          }
+          if (qty > 0) {
+            const evalRes = risk.evaluate(symbol, 'sell', qty, px.mark);
+            if (evalRes.allowed && evalRes.qty > 0) {
+              const { trade, realizedDelta } = broker.paperFill(symbol, 'sell', evalRes.qty, px.mark);
+              risk.onTrade({ symbol, side: 'sell', qty: evalRes.qty, price: px.mark, realizedDelta });
+              log.info(`${nowIso()} [${symbol}] SELL ${evalRes.qty.toFixed(4)} @ ~${px.mark.toFixed(4)} | cash=${state.cash.toFixed(2)} (${evalRes.reason})`);
+            } else {
+              log.debug?.(`[${symbol}] SELL vetoed: ${evalRes.reason}`);
+            }
+          }
         }
       }
 
@@ -52,6 +88,7 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
         const lines = [];
         let upnlTotal = 0;
         let rpnlTotal = 0;
+
         for (const { symbol } of universe) {
           const mkt = store.ensureMarket(symbol);
           const mtm = mkt.lastMark != null ? broker.markToMarketPx(symbol, mkt.lastMark) : 0;
@@ -64,7 +101,8 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
             `fees=${mkt.feesPaid.toFixed(2)}`
           );
         }
-        const equity = state.cash // + upnlTotal;
+
+        const equity = state.cash + upnlTotal; // correct equity calc
         log.info(
           `equity=${equity.toFixed(2)} cash=${state.cash.toFixed(2)} ` +
           `UPNL=${upnlTotal.toFixed(2)} RPNL=${rpnlTotal.toFixed(2)} ` +
@@ -75,7 +113,7 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
         const navAlt = state.deposit + rpnlTotal + upnlTotal - feesTotal;
         if (Math.abs(navAlt - equity) > 1e-6) {
           log.warn(`NAV mismatch: equity=${equity.toFixed(2)} alt=${navAlt.toFixed(2)}`);
-        }   
+        }
       }
 
       // periodic autosave
@@ -86,24 +124,22 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
     } catch (e) {
       log.error(`loop error: ${e?.message || e}`);
     }
-    // schedule next tick with optional jitter
-      const jitter = cfg.TICK_JITTER_MS ? Math.floor(Math.random() * cfg.TICK_JITTER_MS) : 0;
-      return setTimeout(tick, cfg.TICK_MS + jitter);
-    };
-    
-    // kick off and store timeout ID
-    let currentTimeout = tick();
+
+    const jitter = cfg.TICK_JITTER_MS ? Math.floor(Math.random() * cfg.TICK_JITTER_MS) : 0;
+    setTimeout(tick, cfg.TICK_MS + jitter);
+  };
+
+  // kick off
+  risk.ensureDayStartEquity();
+  tick();
 
   const shutdown = async () => {
-    if (currentTimeout) clearTimeout(currentTimeout);
     try { await ctx.close(); } catch {}
     store.save();
 
     console.log('\n=== FINAL PAPER STATS ===');
-    let totalTrades = 0;
     for (const { symbol } of universe) {
       const m = store.ensureMarket(symbol);
-      totalTrades += m.trades.length;
       console.log(`-- ${symbol} --`);
       console.log(`Trades: ${m.trades.length}`);
       console.log(`Realized PnL: ${m.realizedPnL.toFixed(2)}`);

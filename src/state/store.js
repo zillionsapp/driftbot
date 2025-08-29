@@ -27,11 +27,13 @@ export async function createStore(cfg, log) {
     meta: {
       createdAt: nowIso(),
       network: cfg.ENV_NETWORK,
-      notes: 'paper trading state (multi-market)'
+      notes: 'paper trading state (multi-market)',
+      dayStartDate: null,
+      dayStartEquity: null
     },
     deposit: cfg.INITIAL_DEPOSIT,
     cash: cfg.INITIAL_DEPOSIT,
-    markets: {} // keyed by symbol
+    markets: {} // symbol -> { position, entryPrice, realizedPnL, feesPaid, trades[], lastMark, strategy{} }
   };
 
   function ensureMarket(symbol) {
@@ -41,7 +43,9 @@ export async function createStore(cfg, log) {
         entryPrice: 0,
         realizedPnL: 0,
         feesPaid: 0,
-        trades: []
+        trades: [],
+        lastMark: null,
+        strategy: {} // { fast, slow, volEwmaBps, lastState, entryTs, lastExitTs, ticks, warmTicks }
       };
     }
     return state.markets[symbol];
@@ -54,6 +58,10 @@ export async function createStore(cfg, log) {
     recordTrade: (symbol, trade) => {
       ensureMarket(symbol).trades.push(trade);
       save(state);
+    },
+    getStrategyState: (symbol) => ensureMarket(symbol).strategy || {},
+    setStrategyState: (symbol, snapshot) => {
+      ensureMarket(symbol).strategy = snapshot || {};
     }
   };
 

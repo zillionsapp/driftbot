@@ -5,7 +5,7 @@ export function createConfig() {
   const ENV_NETWORK = (process.env.NETWORK || 'mainnet-beta').toLowerCase();
   const RPC_URL = process.env.RPC_URL || '';
   const WS_URL = process.env.WS_URL || '';
-  const MARKET_SYMBOL = process.env.MARKET_SYMBOL || 'SOL-PERP'; // default single symbol
+  const MARKET_SYMBOL = process.env.MARKET_SYMBOL || 'SOL-PERP';
   const MARKETS_ENV = (process.env.MARKETS || MARKET_SYMBOL).split(',').map(s => s.trim()).filter(Boolean);
   const MAX_MARKETS = Math.max(1, Number(process.env.MAX_MARKETS || 1));
 
@@ -15,8 +15,8 @@ export function createConfig() {
 
   const LOG_EVERY_MS = Number(process.env.LOG_EVERY_MS || 10000);
   const TICK_MS = Number(process.env.TICK_MS || 1000);
-  const MIN_MARK_MOVE_BPS = Number(process.env.MIN_MARK_MOVE_BPS || 1); // 1 bp = 0.01%
-  const TICK_JITTER_MS = Number(process.env.TICK_JITTER_MS || 0);       // optional random jitter
+  const MIN_MARK_MOVE_BPS = Number(process.env.MIN_MARK_MOVE_BPS || 1);
+  const TICK_JITTER_MS = Number(process.env.TICK_JITTER_MS || 0);
 
   const STATE_FILE = process.env.STATE_FILE || './state.json';
   const RESET_STATE = String(process.env.RESET_STATE || 'false').toLowerCase() === 'true';
@@ -33,36 +33,46 @@ export function createConfig() {
   const __dirname = path.dirname(__filename);
   const statePath = path.isAbsolute(STATE_FILE) ? STATE_FILE : path.join(__dirname, '..', STATE_FILE);
 
+  // Strategy config (single source of truth)
+  const STRAT_EMA = {
+    fastPeriod: FAST_EMA,
+    slowPeriod: SLOW_EMA,
+    baseNotional: BASE_NOTIONAL,
+    longOnly: String(process.env.LONG_ONLY || 'false').toLowerCase() === 'true',
+    enterBpsLong: Number(process.env.ENTER_BPS_LONG || 20),
+    exitBpsLong:  Number(process.env.EXIT_BPS_LONG  || 10),
+    enterBpsShort: Number(process.env.ENTER_BPS_SHORT || 28),
+    exitBpsShort:  Number(process.env.EXIT_BPS_SHORT  || 12),
+    minHoldMs: Number(process.env.MIN_HOLD_MS || 120000),
+    cooldownMs: Number(process.env.COOLDOWN_MS || 30000),
+    volLookback: Number(process.env.VOL_LOOKBACK || 60),
+    volK: Number(process.env.VOL_K || 1.5),
+    breakoutLookback: Number(process.env.BREAKOUT_LOOKBACK || 0),
+    breakoutBps: Number(process.env.BREAKOUT_BPS || 5),
+    minWarmTicks: Number(process.env.MIN_WARM_TICKS || (2 * SLOW_EMA))
+  };
+
+  // Risk config
+  const RISK = {
+    MAX_POSITION_USD_PER_MARKET: Number(process.env.MAX_POSITION_USD_PER_MARKET || 0), // 0 = unlimited
+    MAX_TRADES_PER_MIN: Number(process.env.MAX_TRADES_PER_MIN || 20),
+    DAILY_LOSS_LIMIT_PCT: Number(process.env.DAILY_LOSS_LIMIT_PCT || 0), // 0 = off
+    COOLDOWN_AFTER_LOSS_MS: Number(process.env.COOLDOWN_AFTER_LOSS_MS || 60000)
+  };
+
   return {
     ENV_NETWORK,
     RPC_URL, WS_URL,
     MARKET_SYMBOL,
     MARKETS_ENV, MAX_MARKETS,
     BASE_NOTIONAL, FAST_EMA, SLOW_EMA,
-    LOG_EVERY_MS, TICK_MS, 
-    MIN_MARK_MOVE_BPS, 
-    TICK_JITTER_MS,
+    LOG_EVERY_MS, TICK_MS, MIN_MARK_MOVE_BPS, TICK_JITTER_MS,
     STATE_FILE: statePath,
     RESET_STATE,
     INITIAL_DEPOSIT,
     ACCOUNT_SUB_TYPE,
     NODE_ENV: process.env.NODE_ENV || 'production',
-    STRAT_EMA: {
-      fastPeriod: FAST_EMA,
-      slowPeriod: SLOW_EMA,
-      baseNotional: BASE_NOTIONAL,
-      longOnly: String(process.env.LONG_ONLY || 'false') !== 'false', // default false
-      enterBpsLong: Number(process.env.ENTER_BPS_LONG || 20),
-      exitBpsLong: Number(process.env.EXIT_BPS_LONG || 10),
-      enterBpsShort: Number(process.env.ENTER_BPS_SHORT || 28),
-      exitBpsShort: Number(process.env.EXIT_BPS_SHORT || 12),
-      minHoldMs: Number(process.env.MIN_HOLD_MS || 120000),
-      cooldownMs: Number(process.env.COOLDOWN_MS || 30000),
-      volLookback: Number(process.env.VOL_LOOKBACK || 60),
-      volK: Number(process.env.VOL_K || 1.5),
-      breakoutLookback: Number(process.env.BREAKOUT_LOOKBACK || 0),
-      breakoutBps: Number(process.env.BREAKOUT_BPS || 5),
-      minWarmTicks: Number(process.env.MIN_WARM_TICKS || (2 * SLOW_EMA)),
-    }
+    STRAT_EMA,
+    RISK
   };
 }

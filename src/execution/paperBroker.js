@@ -2,11 +2,12 @@ import { nowIso } from '../utils/time.js';
 
 /**
  * Paper broker with per-market bookkeeping, global cash.
+ * Returns { trade, realizedDelta } on fill.
  */
 export function createPaperBroker(cfg, store, log) {
   const state = store.get();
   const feeBps = 2;      // 2 bps per side
-  const slippageBps = 1; // 1 bps
+  const slippageBps = 1; // 1 bp
 
   function applyFee(notional, mkt) {
     const fee = (feeBps / 1e4) * Math.abs(notional);
@@ -27,7 +28,7 @@ export function createPaperBroker(cfg, store, log) {
   }
 
   function paperFill(symbol, side, qty, markPrice) {
-    if (qty <= 0) return;
+    if (qty <= 0) return { trade: null, realizedDelta: 0 };
     const mkt = store.ensureMarket(symbol);
 
     const px = slip(markPrice, side);
@@ -40,9 +41,11 @@ export function createPaperBroker(cfg, store, log) {
     // fees
     applyFee(notional, mkt);
 
-    // position & realized (per-market)
+    // position & realized
     const prevPos = mkt.position;
     const newPos = prevPos + (side === 'buy' ? qty : -qty);
+
+    let realizedDelta = 0;
 
     if (prevPos === 0 || Math.sign(prevPos) === Math.sign(newPos)) {
       // increase / same side
@@ -50,10 +53,10 @@ export function createPaperBroker(cfg, store, log) {
       const newQtyAbs = Math.abs(newPos);
       mkt.entryPrice = newQtyAbs > 0 ? totalCost / newQtyAbs : 0;
     } else {
-      // reduce/close/flip
+      // reduce/close/flip (runner should clamp to avoid flips; but safe here)
       const closingQty = Math.min(Math.abs(prevPos), qty);
-      const realized = (px - mkt.entryPrice) * Math.sign(prevPos) * closingQty;
-      mkt.realizedPnL += realized;
+      realizedDelta = (px - mkt.entryPrice) * Math.sign(prevPos) * closingQty;
+      mkt.realizedPnL += realizedDelta;
 
       if (Math.abs(newPos) > 0 && Math.sign(newPos) !== Math.sign(prevPos)) {
         // flipped
@@ -73,7 +76,8 @@ export function createPaperBroker(cfg, store, log) {
       notional: px * qty * (side === 'sell' ? 1 : -1)
     };
     store.recordTrade(symbol, trade);
-    return trade;
+
+    return { trade, realizedDelta };
   }
 
   return {
