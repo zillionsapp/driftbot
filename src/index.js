@@ -12,6 +12,8 @@ async function main() {
   const cfg = createConfig();
   const log = createLogger(cfg);
 
+  const stratCfg = cfg.STRAT_EMA;
+
   const store = await createStore(cfg, log);
 
   // Resolve market universe and subscribe only to those indexes
@@ -27,17 +29,7 @@ async function main() {
   // Strategy instances per market (same config for now)
   const strategiesBySymbol = {};
   for (const { symbol } of universe) {
-    strategiesBySymbol[symbol] = createEMAAdaptive({
-      fastPeriod: cfg.FAST_EMA,
-      slowPeriod: cfg.SLOW_EMA,
-      baseNotional: cfg.BASE_NOTIONAL,
-      longOnly: false,
-      enterBpsLong: 20, exitBpsLong: 10,
-      enterBpsShort: 28, exitBpsShort: 12,
-      minHoldMs: 2*60*1000, cooldownMs: 30*1000,
-      volLookback: 60, volK: 1.5,
-      breakoutLookback: 0, breakoutBps: 5
-    });
+    strategiesBySymbol[symbol] = createEMAAdaptive(stratCfg);
   }
 
   const broker = createPaperBroker(cfg, store, log);

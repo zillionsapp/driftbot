@@ -1,48 +1,87 @@
-// Adaptive EMA: bull & bear, cost-aware, volatility-adaptive, optional breakout filter
-export function createStrategy({
-  fastPeriod = 20,
-  slowPeriod = 60,
-  baseNotional = 100,
+// src/strategies/emaAdaptive.js
+//
+// Adaptive EMA strategy (bull & bear), cost/vol-aware, with warmup.
+// SINGLE SOURCE OF TRUTH: all knobs come from the cfg object you pass in.
+// The ONLY implicit default is minWarmTicks (derived if omitted).
+//
+// Expected cfg shape (all required unless noted):
+// {
+//   fastPeriod, slowPeriod, baseNotional,
+//   enterBpsLong, exitBpsLong, enterBpsShort, exitBpsShort,
+//   longOnly,                 // boolean
+//   minHoldMs, cooldownMs,
+//   volLookback, volK,
+//   breakoutLookback,         // set 0 to disable
+//   breakoutBps,              // set 0 if not using breakout
+//   minWarmTicks?,            // optional; if missing -> max(2*slowPeriod, 200)
+//   seed?: { fast?, slow?, volEwmaBps?, lastMark? } // optional
+// }
 
-  // side-specific base thresholds in bps (1bp = 0.01%)
-  enterBpsLong = 20, exitBpsLong = 10,
-  enterBpsShort = 28, exitBpsShort = 12,   // shorts a bit stricter
+export function createStrategy(cfg) {
+  if (!cfg || typeof cfg !== 'object') {
+    throw new Error('createStrategy requires a configuration object (use cfg.STRAT_EMA)');
+  }
 
-  longOnly = false,
+  // Validate required fields (except minWarmTicks & seed which are optional)
+  const required = [
+    'fastPeriod','slowPeriod','baseNotional',
+    'enterBpsLong','exitBpsLong','enterBpsShort','exitBpsShort',
+    'longOnly','minHoldMs','cooldownMs',
+    'volLookback','volK','breakoutLookback','breakoutBps'
+  ];
+  for (const k of required) {
+    if (cfg[k] === undefined || cfg[k] === null) {
+      throw new Error(`Strategy config missing required key: ${k}`);
+    }
+  }
 
-  // churn guards
-  minHoldMs = 2 * 60 * 1000,
-  cooldownMs = 30 * 1000,
+  // Pull from cfg (single source of truth)
+  const {
+    fastPeriod, slowPeriod, baseNotional,
+    enterBpsLong, exitBpsLong, enterBpsShort, exitBpsShort,
+    longOnly,
+    minHoldMs, cooldownMs,
+    volLookback, volK,
+    breakoutLookback, breakoutBps,
+    minWarmTicks,           // optional
+    seed = {}               // optional
+  } = cfg;
 
-  // volatility adaptation (EWMA of abs returns, in bps)
-  volLookback = 60,
-  volK = 1.5,
+  // Only derived fallback we allow (not a separate config!)
+  const warmTicks = Number.isFinite(minWarmTicks)
+    ? Math.max(1, minWarmTicks)
+    : Math.max(2 * slowPeriod, 200);
 
-  // breakout filter (0 disables)
-  breakoutLookback = 0,   // e.g. 60 ticks
-  breakoutBps = 5         // need 5bp beyond recent extreme
-} = {}) {
-  let fast = null, slow = null, prevSlow = null;
-  let lastState = 'flat';          // 'flat' | 'long' | 'short'
+  // --- internal state (seedable) ---
+  let fast   = Number.isFinite(seed.fast)       ? seed.fast       : null;
+  let slow   = Number.isFinite(seed.slow)       ? seed.slow       : null;
+  let lastMark    = Number.isFinite(seed.lastMark)    ? seed.lastMark    : null;
+  let volEwmaBps  = Number.isFinite(seed.volEwmaBps) ? seed.volEwmaBps  : null;
+  let prevSlow = null;
+
+  let lastState = 'flat'; // 'flat' | 'long' | (if !longOnly) 'short'
   let entryTs = 0, lastExitTs = 0;
-  let lastMark = null, volEwmaBps = null;
+  let ticks = 0;
 
-  // ring buffer for breakout
+  // Ring buffer for optional breakout confirmation
   const buf = [];
-  const push = (m) => {
+  const pushMark = (m) => {
     if (breakoutLookback <= 0) return;
     buf.push(m);
     if (buf.length > breakoutLookback) buf.shift();
   };
 
   function onPrice({ mark }) {
-    // --- volatility EWMA (bps) ---
+    if (!Number.isFinite(mark)) return { action: null, baseNotional };
+
+    // --- volatility EWMA (in bps) ---
     if (lastMark != null) {
       const retBps = Math.abs((mark - lastMark) / lastMark) * 1e4;
-      const kv = 2 / (volLookback + 1);
-      volEwmaBps = (volEwmaBps == null) ? retBps : volEwmaBps + kv * (retBps - volEwmaBps);
+      const kVol = 2 / (volLookback + 1);
+      volEwmaBps = (volEwmaBps == null) ? retBps : (volEwmaBps + kVol * (retBps - volEwmaBps));
     }
-    lastMark = mark; push(mark);
+    lastMark = mark;
+    pushMark(mark);
 
     // --- EMAs ---
     const kf = 2 / (fastPeriod + 1);
@@ -50,12 +89,19 @@ export function createStrategy({
     fast = (fast == null) ? mark : fast + kf * (mark - fast);
     const prevSlowLocal = slow;
     slow = (slow == null) ? mark : slow + ks * (mark - slow);
-    if (prevSlowLocal == null) { prevSlow = slow; return { action: null, baseNotional }; }
 
-    // signal features
+    ticks++;
+    // need at least one prior slow to compute slope; and warmup complete
+    if (prevSlowLocal == null || ticks < warmTicks) {
+      prevSlow = slow;
+      return { action: null, baseNotional };
+    }
+
+    // --- features ---
     const delta = fast - slow;
     const deltaBps = (delta / mark) * 1e4;
-    const slowSlopeBps = ((slow - prevSlowLocal) / mark) * 1e4;   // regime proxy
+    const slowSlopeBps = ((slow - prevSlowLocal) / mark) * 1e4; // regime proxy
+    prevSlow = prevSlowLocal;
 
     // dynamic thresholds (>= base)
     const dynEnterLong  = Math.max(enterBpsLong,  (volEwmaBps ?? 0) * volK);
@@ -63,13 +109,13 @@ export function createStrategy({
     const dynEnterShort = Math.max(enterBpsShort, (volEwmaBps ?? 0) * volK);
     const dynExitShort  = Math.max(exitBpsShort,  (volEwmaBps ?? 0) * volK * 0.5);
 
-    // optional breakout filter to avoid shorting into squeezes / buying into fades
+    // optional breakout confirmation (set breakoutLookback=0 to disable)
     let longOK = true, shortOK = true;
     if (breakoutLookback > 0 && buf.length >= 2) {
       const recentLow  = Math.min(...buf);
       const recentHigh = Math.max(...buf);
-      const upThresh   = recentHigh * (1 - breakoutBps / 1e4);
-      const dnThresh   = recentLow  * (1 + breakoutBps / 1e4);
+      const upThresh = recentHigh * (1 - breakoutBps / 1e4); // near highs for longs
+      const dnThresh = recentLow  * (1 + breakoutBps / 1e4); // near lows for shorts
       longOK  = mark >= upThresh;
       shortOK = mark <= dnThresh;
     }
@@ -78,11 +124,11 @@ export function createStrategy({
     const canExit = (now - entryTs) >= minHoldMs;
     const cooled  = (now - lastExitTs) >= cooldownMs;
 
-    // --- State machine ---
+    // --- state machine ---
     if (lastState === 'long') {
-      // exit only on meaningful bearish signal
       if (deltaBps < -dynExitLong && canExit) {
-        lastState = 'flat'; lastExitTs = now;
+        lastState = 'flat';
+        lastExitTs = now;
         return { action: 'sell', baseNotional }; // exit long
       }
       return { action: null, baseNotional };
@@ -90,27 +136,39 @@ export function createStrategy({
 
     if (lastState === 'short' && !longOnly) {
       if (deltaBps > dynExitShort && canExit) {
-        lastState = 'flat'; lastExitTs = now;
+        lastState = 'flat';
+        lastExitTs = now;
         return { action: 'buy', baseNotional }; // exit short
       }
       return { action: null, baseNotional };
     }
 
-    // flat: regime-aligned entries
+    // flat: regime-aligned entries with dynamic thresholds (+ optional breakout)
     const bullish = slowSlopeBps > 0;
     const bearish = slowSlopeBps < 0;
 
     if (deltaBps > dynEnterLong && bullish && cooled && longOK) {
-      lastState = 'long'; entryTs = now;
-      return { action: 'buy', baseNotional };       // enter long
+      lastState = 'long';
+      entryTs = now;
+      return { action: 'buy', baseNotional }; // enter long
     }
     if (!longOnly && deltaBps < -dynEnterShort && bearish && cooled && shortOK) {
-      lastState = 'short'; entryTs = now;
-      return { action: 'sell', baseNotional };      // enter short
+      lastState = 'short';
+      entryTs = now;
+      return { action: 'sell', baseNotional }; // enter short
     }
 
     return { action: null, baseNotional };
   }
 
-  return { onPrice };
+  // Optional: snapshot internal state for debugging/persistence
+  function snapshot() {
+    return {
+      fast, slow, prevSlow,
+      lastState, entryTs, lastExitTs,
+      lastMark, volEwmaBps, ticks, warmTicks
+    };
+  }
+
+  return { onPrice, snapshot };
 }

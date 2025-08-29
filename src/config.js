@@ -46,6 +46,23 @@ export function createConfig() {
     RESET_STATE,
     INITIAL_DEPOSIT,
     ACCOUNT_SUB_TYPE,
-    NODE_ENV: process.env.NODE_ENV || 'production'
+    NODE_ENV: process.env.NODE_ENV || 'production',
+    STRAT_EMA: {
+      fastPeriod: FAST_EMA,
+      slowPeriod: SLOW_EMA,
+      baseNotional: BASE_NOTIONAL,
+      longOnly: String(process.env.LONG_ONLY || 'false') !== 'false', // default false
+      enterBpsLong: Number(process.env.ENTER_BPS_LONG || 20),
+      exitBpsLong: Number(process.env.EXIT_BPS_LONG || 10),
+      enterBpsShort: Number(process.env.ENTER_BPS_SHORT || 28),
+      exitBpsShort: Number(process.env.EXIT_BPS_SHORT || 12),
+      minHoldMs: Number(process.env.MIN_HOLD_MS || 120000),
+      cooldownMs: Number(process.env.COOLDOWN_MS || 30000),
+      volLookback: Number(process.env.VOL_LOOKBACK || 60),
+      volK: Number(process.env.VOL_K || 1.5),
+      breakoutLookback: Number(process.env.BREAKOUT_LOOKBACK || 0),
+      breakoutBps: Number(process.env.BREAKOUT_BPS || 5),
+      minWarmTicks: Number(process.env.MIN_WARM_TICKS || (2 * SLOW_EMA)),
+    }
   };
 }
