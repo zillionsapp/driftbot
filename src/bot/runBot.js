@@ -9,17 +9,23 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
   let lastSaveTs = 0;
   const state = store.get();
 
+  // helper to format prices nicely (fewer decimals for high-priced markets)
+  const fmtPx = (v) => v == null ? 'n/a' : (v >= 1000 ? v.toFixed(2) : v.toFixed(4));
+
   const timer = setInterval(async () => {
     try {
       for (const { symbol, marketIndex } of universe) {
         const px = await ctx.getMarkPrice(marketIndex);
         if (!px) continue;
 
+        // cache latest mark for periodic status + MTM
+        const mkt = store.ensureMarket(symbol);
+        mkt.lastMark = px.mark;
+
         const strat = strategiesBySymbol[symbol];
         const signal = strat.onPrice(px);
 
         // Execution
-        const mkt = store.ensureMarket(symbol);
         if (signal.action === 'buy' && mkt.position <= 0) {
           const qty = Math.max(0.001, signal.baseNotional / px.mark);
           broker.paperFill(symbol, 'buy', qty, px.mark);
@@ -43,8 +49,10 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
           const mtm = mkt.lastMark != null ? broker.markToMarketPx(symbol, mkt.lastMark) : 0;
           equity += (mkt.realizedPnL + mtm);
           lines.push(
-            `[${symbol}] pos=${mkt.position.toFixed(4)} entry=${mkt.entryPrice.toFixed(4)} ` +
-            `RPNL=${mkt.realizedPnL.toFixed(2)} fees=${mkt.feesPaid.toFixed(2)}`
+            `[${symbol}] px≈${fmtPx(mkt.lastMark)} ` +
+            `pos=${mkt.position.toFixed(4)} entry=${fmtPx(mkt.entryPrice)} ` +
+            `UPNL=${mtm.toFixed(2)} RPNL=${mkt.realizedPnL.toFixed(2)} ` +
+            `fees=${mkt.feesPaid.toFixed(2)}`
           );
         }
         log.info(`equity=${equity.toFixed(2)} deposit=${state.deposit.toFixed(2)} | ` + lines.join(' | '));
