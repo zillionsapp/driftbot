@@ -64,7 +64,7 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
             `fees=${mkt.feesPaid.toFixed(2)}`
           );
         }
-        const equity = state.cash + upnlTotal;
+        const equity = state.cash // + upnlTotal;
         log.info(
           `equity=${equity.toFixed(2)} cash=${state.cash.toFixed(2)} ` +
           `UPNL=${upnlTotal.toFixed(2)} RPNL=${rpnlTotal.toFixed(2)} ` +
@@ -88,13 +88,14 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
     }
     // schedule next tick with optional jitter
       const jitter = cfg.TICK_JITTER_MS ? Math.floor(Math.random() * cfg.TICK_JITTER_MS) : 0;
-      setTimeout(tick, cfg.TICK_MS + jitter);
+      return setTimeout(tick, cfg.TICK_MS + jitter);
     };
-    // kick off
-    tick();
+    
+    // kick off and store timeout ID
+    let currentTimeout = tick();
 
   const shutdown = async () => {
-    clearInterval(timer);
+    if (currentTimeout) clearTimeout(currentTimeout);
     try { await ctx.close(); } catch {}
     store.save();
 
