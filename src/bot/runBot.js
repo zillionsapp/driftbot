@@ -12,7 +12,7 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
   // helper to format prices nicely (fewer decimals for high-priced markets)
   const fmtPx = (v) => v == null ? 'n/a' : (v >= 1000 ? v.toFixed(2) : v.toFixed(4));
 
-  const timer = setInterval(async () => {
+  const tick = async () => {
     try {
       for (const { symbol, marketIndex } of universe) {
         const px = await ctx.getMarkPrice(marketIndex);
@@ -20,7 +20,14 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
 
         // cache latest mark for periodic status + MTM
         const mkt = store.ensureMarket(symbol);
+        const prevMark = mkt.lastMark;
         mkt.lastMark = px.mark;
+
+        // --- price move gate (skip tiny moves to save work/RPC userland) ---
+        if (prevMark != null) {
+          const moveBps = Math.abs((px.mark - prevMark) / prevMark) * 1e4;
+          if (moveBps < cfg.MIN_MARK_MOVE_BPS) continue;
+        }
 
         const strat = strategiesBySymbol[symbol];
         const signal = strat.onPrice(px);
@@ -79,7 +86,12 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
     } catch (e) {
       log.error(`loop error: ${e?.message || e}`);
     }
-  }, cfg.TICK_MS);
+    // schedule next tick with optional jitter
+      const jitter = cfg.TICK_JITTER_MS ? Math.floor(Math.random() * cfg.TICK_JITTER_MS) : 0;
+      setTimeout(tick, cfg.TICK_MS + jitter);
+    };
+    // kick off
+    tick();
 
   const shutdown = async () => {
     clearInterval(timer);

@@ -15,6 +15,9 @@ export function createConfig() {
 
   const LOG_EVERY_MS = Number(process.env.LOG_EVERY_MS || 10000);
   const TICK_MS = Number(process.env.TICK_MS || 1000);
+  const MIN_MARK_MOVE_BPS = Number(process.env.MIN_MARK_MOVE_BPS || 1); // 1 bp = 0.01%
+  const TICK_JITTER_MS = Number(process.env.TICK_JITTER_MS || 0);       // optional random jitter
+
   const STATE_FILE = process.env.STATE_FILE || './state.json';
   const RESET_STATE = String(process.env.RESET_STATE || 'false').toLowerCase() === 'true';
   const INITIAL_DEPOSIT = Number(process.env.INITIAL_DEPOSIT || 10000);
@@ -36,7 +39,9 @@ export function createConfig() {
     MARKET_SYMBOL,
     MARKETS_ENV, MAX_MARKETS,
     BASE_NOTIONAL, FAST_EMA, SLOW_EMA,
-    LOG_EVERY_MS, TICK_MS,
+    LOG_EVERY_MS, TICK_MS, 
+    MIN_MARK_MOVE_BPS, 
+    TICK_JITTER_MS,
     STATE_FILE: statePath,
     RESET_STATE,
     INITIAL_DEPOSIT,
