@@ -5,7 +5,7 @@ import { createStore } from './state/store.js';
 import { createPaperBroker } from './execution/paperBroker.js';
 import { createDriftContext } from './drift/client.js';
 import { buildMarketUniverse } from './markets/universe.js';
-import { createStrategy as createEmaV2 } from './strategies/emaCrossoverV2.js';
+import { createStrategy as createEMAAdaptive } from './strategies/emaAdaptive.js';
 import { runBot } from './bot/runBot.js';
 
 async function main() {
@@ -27,17 +27,16 @@ async function main() {
   // Strategy instances per market (same config for now)
   const strategiesBySymbol = {};
   for (const { symbol } of universe) {
-    strategiesBySymbol[symbol] = createEmaV2({
+    strategiesBySymbol[symbol] = createEMAAdaptive({
       fastPeriod: cfg.FAST_EMA,
       slowPeriod: cfg.SLOW_EMA,
       baseNotional: cfg.BASE_NOTIONAL,
-      enterBps: 20,   // start here; raise if still churning
-      exitBps: 10,
-      longOnly: true,
-      minHoldMs: 2 * 60 * 1000,
-      cooldownMs: 30 * 1000,
-      volLookback: 60,
-      volK: 1.5
+      longOnly: false,
+      enterBpsLong: 20, exitBpsLong: 10,
+      enterBpsShort: 28, exitBpsShort: 12,
+      minHoldMs: 2*60*1000, cooldownMs: 30*1000,
+      volLookback: 60, volK: 1.5,
+      breakoutLookback: 0, breakoutBps: 5
     });
   }
 
