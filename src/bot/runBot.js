@@ -43,11 +43,13 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
       if (tnow - lastLogTs > cfg.LOG_EVERY_MS) {
         lastLogTs = tnow;
         const lines = [];
-        let equity = state.cash;
+        let upnlTotal = 0;
+        let rpnlTotal = 0;
         for (const { symbol } of universe) {
           const mkt = store.ensureMarket(symbol);
           const mtm = mkt.lastMark != null ? broker.markToMarketPx(symbol, mkt.lastMark) : 0;
-          equity += (mkt.realizedPnL + mtm);
+          upnlTotal += mtm;
+          rpnlTotal += mkt.realizedPnL;
           lines.push(
             `[${symbol}] px≈${fmtPx(mkt.lastMark)} ` +
             `pos=${mkt.position.toFixed(4)} entry=${fmtPx(mkt.entryPrice)} ` +
@@ -55,7 +57,18 @@ export async function runBot({ cfg, log, store, ctx, universe, strategiesBySymbo
             `fees=${mkt.feesPaid.toFixed(2)}`
           );
         }
-        log.info(`equity=${equity.toFixed(2)} deposit=${state.deposit.toFixed(2)} | ` + lines.join(' | '));
+        const equity = state.cash + upnlTotal;
+        log.info(
+          `equity=${equity.toFixed(2)} cash=${state.cash.toFixed(2)} ` +
+          `UPNL=${upnlTotal.toFixed(2)} RPNL=${rpnlTotal.toFixed(2)} ` +
+          `deposit=${state.deposit.toFixed(2)} | ` + lines.join(' | ')
+        );
+
+        const feesTotal = Object.values(state.markets).reduce((s,m)=>s + m.feesPaid, 0);
+        const navAlt = state.deposit + rpnlTotal + upnlTotal - feesTotal;
+        if (Math.abs(navAlt - equity) > 1e-6) {
+          log.warn(`NAV mismatch: equity=${equity.toFixed(2)} alt=${navAlt.toFixed(2)}`);
+        }   
       }
 
       // periodic autosave
