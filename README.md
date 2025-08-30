@@ -14,7 +14,7 @@ It cleanly separates **config**, **state**, **market data**, **execution**, and 
 
 2. **Run**:
    ```bash
-   npm start
+   node src/index.js
    ```
 
 3. **File Tree**
